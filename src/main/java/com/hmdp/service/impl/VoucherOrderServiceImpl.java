@@ -8,8 +8,10 @@ import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisIdWorker;
+import com.hmdp.utils.SimpleRedisLock;
 import com.hmdp.utils.UserHolder;
-import org.springframework.aop.framework.AopContext;
+import org.springframework.context.ApplicationContext;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -33,6 +35,12 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private RedisIdWorker redisIdWorker;
 
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
+    @Resource
+    private ApplicationContext applicationContext;
+
 
     @Override
     public Result seckillVoucher(Long voucherId) {
@@ -48,10 +56,24 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         }
 
         Long userId = UserHolder.getUser().getId();
-        synchronized (userId.toString().intern()){
+
+        SimpleRedisLock simpleRedisLock = new SimpleRedisLock(stringRedisTemplate, "order:" + userId);
+
+        if(!simpleRedisLock.tryLock(1200)){
+            return Result.fail("已经购买过订单！");
+        }
+
+        try {
+            IVoucherOrderService proxy = applicationContext.getBean(IVoucherOrderService.class);
+            return proxy.createOrder(voucherId);
+        } finally {
+            simpleRedisLock.unlock();
+        }
+
+         /*synchronized (userId.toString().intern()){
             IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
         return proxy.createOrder(voucherId);
-        }
+        }*/
     }
 
     @Transactional
@@ -59,7 +81,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
         Long userId = UserHolder.getUser().getId();
 
-            int count = query().eq("id",userId).eq("voucher_id",voucherId).count();
+            int count = query().eq("user_id",userId).eq("voucher_id",voucherId).count();
 
             if(count > 0){
                 return Result.fail("用户已经购买过一次！");
